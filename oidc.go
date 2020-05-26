@@ -65,11 +65,12 @@ func doRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
 
 // Provider represents an OpenID Connect server's configuration.
 type Provider struct {
-	issuer      string
-	authURL     string
-	tokenURL    string
-	userInfoURL string
-	algorithms  []string
+	issuer        string
+	authURL       string
+	tokenURL      string
+	userInfoURL   string
+	endSessionURL string
+	algorithms    []string
 
 	// Raw claims returned by the server.
 	rawClaims []byte
@@ -83,12 +84,15 @@ type cachedKeys struct {
 }
 
 type providerJSON struct {
-	Issuer      string   `json:"issuer"`
-	AuthURL     string   `json:"authorization_endpoint"`
-	TokenURL    string   `json:"token_endpoint"`
-	JWKSURL     string   `json:"jwks_uri"`
-	UserInfoURL string   `json:"userinfo_endpoint"`
-	Algorithms  []string `json:"id_token_signing_alg_values_supported"`
+	Issuer                   string   `json:"issuer"`
+	AuthURL                  string   `json:"authorization_endpoint"`
+	TokenURL                 string   `json:"token_endpoint"`
+	JWKSURL                  string   `json:"jwks_uri"`
+	UserInfoURL              string   `json:"userinfo_endpoint"`
+	HttpLogoutSupported      bool     `json:"http_logout_supported"`
+	FrontChanLogoutSupported bool     `json:"frontchannel_logout_supported"`
+	EndSessionURL            string   `json:"end_session_endpoint"`
+	Algorithms               []string `json:"id_token_signing_alg_values_supported"`
 }
 
 // supportedAlgorithms is a list of algorithms explicitly supported by this
@@ -112,6 +116,7 @@ var supportedAlgorithms = map[string]bool{
 // or "https://login.salesforce.com".
 func NewProvider(ctx context.Context, issuer string) (*Provider, error) {
 	wellKnown := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
+	fmt.Printf("going after %s\n", wellKnown)
 	req, err := http.NewRequest("GET", wellKnown, nil)
 	if err != nil {
 		return nil, err
@@ -126,7 +131,7 @@ func NewProvider(ctx context.Context, issuer string) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to read response body: %v", err)
 	}
-
+	fmt.Println(string(body))
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s: %s", resp.Status, body)
 	}
@@ -137,9 +142,6 @@ func NewProvider(ctx context.Context, issuer string) (*Provider, error) {
 		return nil, fmt.Errorf("oidc: failed to decode provider discovery object: %v", err)
 	}
 
-	if p.Issuer != issuer {
-		return nil, fmt.Errorf("oidc: issuer did not match the issuer returned by provider, expected %q got %q", issuer, p.Issuer)
-	}
 	var algs []string
 	for _, a := range p.Algorithms {
 		if supportedAlgorithms[a] {
@@ -147,32 +149,33 @@ func NewProvider(ctx context.Context, issuer string) (*Provider, error) {
 		}
 	}
 	return &Provider{
-		issuer:       p.Issuer,
-		authURL:      p.AuthURL,
-		tokenURL:     p.TokenURL,
-		userInfoURL:  p.UserInfoURL,
-		algorithms:   algs,
-		rawClaims:    body,
-		remoteKeySet: NewRemoteKeySet(ctx, p.JWKSURL),
+		issuer:        p.Issuer,
+		authURL:       p.AuthURL,
+		tokenURL:      p.TokenURL,
+		userInfoURL:   p.UserInfoURL,
+		endSessionURL: p.EndSessionURL,
+		algorithms:    algs,
+		rawClaims:     body,
+		remoteKeySet:  NewRemoteKeySet(ctx, p.JWKSURL),
 	}, nil
 }
 
-// Claims unmarshals raw fields returned by the server during discovery.
+// UnmarshalClaims unmarshals raw fields returned by the server during discovery.
 //
 //    var claims struct {
 //        ScopesSupported []string `json:"scopes_supported"`
 //        ClaimsSupported []string `json:"claims_supported"`
 //    }
 //
-//    if err := provider.Claims(&claims); err != nil {
+//    if err := provider.UnmarshalClaims(&claims); err != nil {
 //        // handle unmarshaling error
 //    }
 //
 // For a list of fields defined by the OpenID Connect spec see:
 // https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata
-func (p *Provider) Claims(v interface{}) error {
+func (p *Provider) UnmarshalClaims(v interface{}) error {
 	if p.rawClaims == nil {
-		return errors.New("oidc: claims not set")
+		return errors.New("oidc: RawClaims not set")
 	}
 	return json.Unmarshal(p.rawClaims, v)
 }
@@ -180,6 +183,11 @@ func (p *Provider) Claims(v interface{}) error {
 // Endpoint returns the OAuth2 auth and token endpoints for the given provider.
 func (p *Provider) Endpoint() oauth2.Endpoint {
 	return oauth2.Endpoint{AuthURL: p.authURL, TokenURL: p.tokenURL}
+}
+
+// LogoutEndpoint returns the logout endpoint for a given provider.
+func (p *Provider) LogoutEndpoint() string {
+	return p.endSessionURL
 }
 
 // UserInfo represents the OpenID Connect userinfo claims.
@@ -192,10 +200,10 @@ type UserInfo struct {
 	claims []byte
 }
 
-// Claims unmarshals the raw JSON object claims into the provided object.
-func (u *UserInfo) Claims(v interface{}) error {
+// UnmarshalClaims unmarshals the raw JSON object claims into the provided object.
+func (u *UserInfo) UnmarshalClaims(v interface{}) error {
 	if u.claims == nil {
-		return errors.New("oidc: claims not set")
+		return errors.New("oidc: RawClaims not set")
 	}
 	return json.Unmarshal(u.claims, v)
 }
@@ -242,7 +250,7 @@ func (p *Provider) UserInfo(ctx context.Context, tokenSource oauth2.TokenSource)
 // of an authorization event.
 //
 // The ID Token only holds fields OpenID Connect requires. To access additional
-// claims returned by the server, use the Claims method.
+// claims returned by the server, use the UnmarshalClaims method.
 type IDToken struct {
 	// The URL of the server which issued this token. OpenID Connect
 	// requires this value always be identical to the URL used for
@@ -284,13 +292,13 @@ type IDToken struct {
 	sigAlgorithm string
 
 	// Raw payload of the id_token.
-	claims []byte
+	RawClaims []byte
 
 	// Map of distributed claim names to claim sources
 	distributedClaims map[string]claimSource
 }
 
-// Claims unmarshals the raw JSON payload of the ID Token into a provided struct.
+// UnmarshalClaims unmarshals the raw JSON payload of the ID Token into a provided struct.
 //
 //		idToken, err := idTokenVerifier.Verify(rawIDToken)
 //		if err != nil {
@@ -300,15 +308,15 @@ type IDToken struct {
 //			Email         string `json:"email"`
 //			EmailVerified bool   `json:"email_verified"`
 //		}
-//		if err := idToken.Claims(&claims); err != nil {
+//		if err := idToken.UnmarshalClaims(&claims); err != nil {
 //			// handle error
 //		}
 //
-func (i *IDToken) Claims(v interface{}) error {
-	if i.claims == nil {
-		return errors.New("oidc: claims not set")
+func (i *IDToken) UnmarshalClaims(v interface{}) error {
+	if i.RawClaims == nil {
+		return errors.New("oidc: RawClaims not set")
 	}
-	return json.Unmarshal(i.claims, v)
+	return json.Unmarshal(i.RawClaims, v)
 }
 
 // VerifyAccessToken verifies that the hash of the access token that corresponds to the iD token

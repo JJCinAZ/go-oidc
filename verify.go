@@ -138,7 +138,7 @@ func contains(sli []string, ele string) bool {
 	return false
 }
 
-// Returns the Claims from the distributed JWT token
+// Returns the UnmarshalClaims from the distributed JWT token
 func resolveDistributedClaim(ctx context.Context, verifier *IDTokenVerifier, src claimSource) ([]byte, error) {
 	req, err := http.NewRequest("GET", src.Endpoint, nil)
 	if err != nil {
@@ -168,7 +168,7 @@ func resolveDistributedClaim(ctx context.Context, verifier *IDTokenVerifier, src
 		return nil, fmt.Errorf("malformed response body: %v", err)
 	}
 
-	return token.claims, nil
+	return token.RawClaims, nil
 }
 
 func parseClaim(raw []byte, name string, v interface{}) error {
@@ -222,30 +222,30 @@ func (v *IDTokenVerifier) Verify(ctx context.Context, rawIDToken string) (*IDTok
 		return nil, fmt.Errorf("oidc: failed to unmarshal claims: %v", err)
 	}
 
-	distributedClaims := make(map[string]claimSource)
+	/*	distributedClaims := make(map[string]claimSource)
 
-	//step through the token to map claim names to claim sources"
-	for cn, src := range token.ClaimNames {
-		if src == "" {
-			return nil, fmt.Errorf("oidc: failed to obtain source from claim name")
+		//step through the token to map claim names to claim sources"
+		for cn, src := range token.ClaimNames {
+			if src == "" {
+				return nil, fmt.Errorf("oidc: failed to obtain source from claim name")
+			}
+			s, ok := token.ClaimSources[src]
+			if !ok {
+				return nil, fmt.Errorf("oidc: source does not exist")
+			}
+			distributedClaims[cn] = s
 		}
-		s, ok := token.ClaimSources[src]
-		if !ok {
-			return nil, fmt.Errorf("oidc: source does not exist")
-		}
-		distributedClaims[cn] = s
-	}
-
+	*/
 	t := &IDToken{
-		Issuer:            token.Issuer,
-		Subject:           token.Subject,
-		Audience:          []string(token.Audience),
-		Expiry:            time.Time(token.Expiry),
-		IssuedAt:          time.Time(token.IssuedAt),
-		Nonce:             token.Nonce,
-		AccessTokenHash:   token.AtHash,
-		claims:            payload,
-		distributedClaims: distributedClaims,
+		Issuer:          token.Issuer,
+		Subject:         token.Subject,
+		Audience:        []string(token.Audience),
+		Expiry:          time.Time(token.Expiry),
+		IssuedAt:        time.Time(token.IssuedAt),
+		Nonce:           token.Nonce,
+		AccessTokenHash: token.AtHash,
+		RawClaims:       payload,
+		// distributedClaims: distributedClaims,
 	}
 
 	// Check issuer.

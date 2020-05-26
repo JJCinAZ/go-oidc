@@ -83,7 +83,7 @@ func main() {
 			IDTokenClaims *json.RawMessage // ID Token payload is just JSON.
 		}{oauth2Token, new(json.RawMessage)}
 
-		if err := idToken.Claims(&resp.IDTokenClaims); err != nil {
+		if err := idToken.UnmarshalClaims(&resp.IDTokenClaims); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
